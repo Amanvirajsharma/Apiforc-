@@ -1,16 +1,13 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 import subprocess
 import os
 import uuid
-import shutil
-from typing import Optional
 import time
 
 app = FastAPI(title="Universal C++ Code Runner API")
 
-# CORS for Flutter
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,32 +16,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Create temp directory
+# Temp directory
 TEMP_DIR = "temp"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# Models
-class CodeRequest(BaseModel):
-    code: str
-    input: Optional[str] = ""
-    timeout: Optional[int] = 10
-    compiler_flags: Optional[str] = "-O2 -std=c++17"
-
-class CodeResponse(BaseModel):
-    success: bool
-    output: Optional[str] = None
-    error: Optional[str] = None
-    compilation_time: Optional[float] = None
-    execution_time: Optional[float] = None
-    memory_used: Optional[str] = None
-
-# Cleanup old files
 def cleanup_old_files():
     try:
         for filename in os.listdir(TEMP_DIR):
             filepath = os.path.join(TEMP_DIR, filename)
             if os.path.isfile(filepath):
-                if time.time() - os.path.getmtime(filepath) > 3600:  # 1 hour
+                if time.time() - os.path.getmtime(filepath) > 3600:
                     os.remove(filepath)
     except Exception as e:
         print(f"Cleanup error: {e}")
@@ -60,9 +41,10 @@ async def root():
         "message": "Universal C++ Code Runner",
         "version": "1.0",
         "endpoints": {
-            "/run": "POST - Execute any C++ code",
+            "/run": "POST - Execute C++ code",
             "/health": "GET - Health check",
-            "/examples": "GET - Get example codes"
+            "/examples": "GET - Example codes",
+            "/docs": "Swagger documentation"
         }
     }
 
@@ -74,29 +56,33 @@ async def health():
         "temp_dir": os.path.exists(TEMP_DIR)
     }
 
-@app.post("/run", response_model=CodeResponse)
-async def run_code(request: CodeRequest):
-    """
-    Execute any C++ code
-    """
+@app.post("/run")
+async def run_code(
+    code: str,
+    input: str = "",
+    timeout: int = 10,
+    compiler_flags: str = "-O2 -std=c++17"
+):
+    """Execute C++ code"""
+    
     unique_id = str(uuid.uuid4())[:8]
     cpp_file = os.path.join(TEMP_DIR, f"code_{unique_id}.cpp")
     exe_file = os.path.join(TEMP_DIR, f"code_{unique_id}")
     input_file = os.path.join(TEMP_DIR, f"input_{unique_id}.txt")
     
     try:
-        # Write C++ code to file
+        # Write C++ code
         with open(cpp_file, 'w') as f:
-            f.write(request.code)
+            f.write(code)
         
-        # Write input if provided
-        if request.input:
+        # Write input
+        if input:
             with open(input_file, 'w') as f:
-                f.write(request.input)
+                f.write(input)
         
         # Compile
         compile_start = time.time()
-        compile_cmd = f"g++ {cpp_file} -o {exe_file} {request.compiler_flags}"
+        compile_cmd = f"g++ {cpp_file} -o {exe_file} {compiler_flags}"
         
         compile_result = subprocess.run(
             compile_cmd,
@@ -109,61 +95,71 @@ async def run_code(request: CodeRequest):
         compilation_time = time.time() - compile_start
         
         if compile_result.returncode != 0:
-            return CodeResponse(
-                success=False,
-                error=f"Compilation Error:\n{compile_result.stderr}",
-                compilation_time=compilation_time
-            )
+            return {
+                "success": False,
+                "error": f"Compilation Error:\n{compile_result.stderr}",
+                "compilation_time": compilation_time,
+                "output": None,
+                "execution_time": None
+            }
         
         # Execute
         exec_start = time.time()
         
-        if request.input:
+        if input:
             with open(input_file, 'r') as input_f:
                 exec_result = subprocess.run(
                     [exe_file],
                     stdin=input_f,
                     capture_output=True,
                     text=True,
-                    timeout=request.timeout
+                    timeout=timeout
                 )
         else:
             exec_result = subprocess.run(
                 [exe_file],
                 capture_output=True,
                 text=True,
-                timeout=request.timeout
+                timeout=timeout
             )
         
         execution_time = time.time() - exec_start
         
         if exec_result.returncode != 0:
-            return CodeResponse(
-                success=False,
-                error=f"Runtime Error:\n{exec_result.stderr}",
-                compilation_time=compilation_time,
-                execution_time=execution_time
-            )
+            return {
+                "success": False,
+                "error": f"Runtime Error:\n{exec_result.stderr}",
+                "compilation_time": compilation_time,
+                "execution_time": execution_time,
+                "output": None
+            }
         
-        return CodeResponse(
-            success=True,
-            output=exec_result.stdout,
-            compilation_time=compilation_time,
-            execution_time=execution_time
-        )
+        return {
+            "success": True,
+            "output": exec_result.stdout,
+            "error": None,
+            "compilation_time": compilation_time,
+            "execution_time": execution_time
+        }
     
     except subprocess.TimeoutExpired:
-        return CodeResponse(
-            success=False,
-            error="Time Limit Exceeded"
-        )
+        return {
+            "success": False,
+            "error": "Time Limit Exceeded",
+            "output": None,
+            "compilation_time": None,
+            "execution_time": None
+        }
     except Exception as e:
-        return CodeResponse(
-            success=False,
-            error=f"Server Error: {str(e)}"
-        )
+        return {
+            "success": False,
+            "error": f"Server Error: {str(e)}",
+            "output": None,
+            "compilation_time": None,
+            "execution_time": None
+        }
     finally:
-        # Cleanup files
+        # Cleanup
         for file in [cpp_file, exe_file, input_file]:
             if os.path.exists(file):
                 try:
@@ -211,6 +207,7 @@ int main() {
         a = b;
         b = temp;
     }
+    cout << endl;
     return 0;
 }""",
             "input": "10"
@@ -245,7 +242,7 @@ int main() {
 }""",
             "input": "17"
         },
-        "array_operations": {
+        "sorting": {
             "code": """#include <iostream>
 #include <vector>
 #include <algorithm>
