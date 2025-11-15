@@ -1,6 +1,10 @@
 temp/
 *.exe
 *.out
+*.o
 __pycache__/
 venv/
 .env
+.venv/
+*.pyc
+.DS_Store
