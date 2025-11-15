@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: cpp-code-runner
+    name: cpp-executor
     runtime: python
     buildCommand: |
       pip install --upgrade pip

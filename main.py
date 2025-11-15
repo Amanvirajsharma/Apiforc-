@@ -5,7 +5,11 @@ import os
 import uuid
 import time
 
-app = FastAPI(title="Universal C++ Code Runner API")
+app = FastAPI(
+    title="C++ Code Runner API",
+    description="Simple API to run C++ code - Just send JSON!",
+    version="2.0"
+)
 
 # CORS
 app.add_middleware(
@@ -20,69 +24,67 @@ app.add_middleware(
 TEMP_DIR = "temp"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-def cleanup_old_files():
-    try:
-        for filename in os.listdir(TEMP_DIR):
-            filepath = os.path.join(TEMP_DIR, filename)
-            if os.path.isfile(filepath):
-                if time.time() - os.path.getmtime(filepath) > 3600:
-                    os.remove(filepath)
-    except Exception as e:
-        print(f"Cleanup error: {e}")
-
 @app.on_event("startup")
 async def startup():
-    cleanup_old_files()
-    print("✅ C++ Runner API Started")
+    print("✅ C++ Runner API Started - Version 2.0")
 
 @app.get("/")
 async def root():
     return {
-        "message": "Universal C++ Code Runner",
-        "version": "1.0",
-        "endpoints": {
-            "/run": "POST - Execute C++ code",
-            "/health": "GET - Health check",
-            "/examples": "GET - Example codes",
-            "/docs": "Swagger documentation"
-        }
-    }
+        "message": "C++ Code Runner API",
+        "version": "2.0",
+        "usage": {
+            "endpoint": "POST /execute",
+            "example": {
+                "code": "#include <iostream>\nint main() { std::cout << \"Hello!\"; return 0; }",
+                "input": "5 10"
+            }
+        },
+        "docs": "/docs"
+    }  # ← COMMA REMOVED!
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "healthy",
-        "compiler": "g++",
-        "temp_dir": os.path.exists(TEMP_DIR)
-    }
+    return {"status": "ok", "compiler": "g++"}
 
-@app.post("/run")
-async def run_code(
-    code: str,
-    input: str = "",
-    timeout: int = 10,
-    compiler_flags: str = "-O2 -std=c++17"
-):
-    """Execute C++ code"""
+@app.post("/execute")
+async def execute_code(request: dict):
+    """
+    Execute C++ code
     
+    Request body example:
+    {
+        "code": "your C++ code here",
+        "input": "program input (optional)"
+    }
+    """
+    
+    # Get data
+    code = request.get("code", "")
+    user_input = request.get("input", "")
+    
+    if not code:
+        return {"success": False, "error": "No code provided"}
+    
+    # Generate unique filenames
     unique_id = str(uuid.uuid4())[:8]
     cpp_file = os.path.join(TEMP_DIR, f"code_{unique_id}.cpp")
     exe_file = os.path.join(TEMP_DIR, f"code_{unique_id}")
     input_file = os.path.join(TEMP_DIR, f"input_{unique_id}.txt")
     
     try:
-        # Write C++ code
-        with open(cpp_file, 'w') as f:
+        # Write code to file
+        with open(cpp_file, 'w', encoding='utf-8') as f:
             f.write(code)
         
-        # Write input
-        if input:
-            with open(input_file, 'w') as f:
-                f.write(input)
+        # Write input to file if provided
+        if user_input:
+            with open(input_file, 'w', encoding='utf-8') as f:
+                f.write(user_input)
         
         # Compile
         compile_start = time.time()
-        compile_cmd = f"g++ {cpp_file} -o {exe_file} {compiler_flags}"
+        compile_cmd = f"g++ {cpp_file} -o {exe_file} -O2 -std=c++17"
         
         compile_result = subprocess.run(
             compile_cmd,
@@ -92,72 +94,58 @@ async def run_code(
             timeout=30
         )
         
-        compilation_time = time.time() - compile_start
+        compile_time = time.time() - compile_start
         
         if compile_result.returncode != 0:
             return {
                 "success": False,
-                "error": f"Compilation Error:\n{compile_result.stderr}",
-                "compilation_time": compilation_time,
-                "output": None,
-                "execution_time": None
+                "error": compile_result.stderr,
+                "stage": "compilation",
+                "compile_time": compile_time
             }
         
         # Execute
         exec_start = time.time()
         
-        if input:
-            with open(input_file, 'r') as input_f:
+        if user_input:
+            with open(input_file, 'r') as inp:
                 exec_result = subprocess.run(
                     [exe_file],
-                    stdin=input_f,
+                    stdin=inp,
                     capture_output=True,
                     text=True,
-                    timeout=timeout
+                    timeout=10
                 )
         else:
             exec_result = subprocess.run(
                 [exe_file],
                 capture_output=True,
                 text=True,
-                timeout=timeout
+                timeout=10
             )
         
-        execution_time = time.time() - exec_start
+        exec_time = time.time() - exec_start
         
-        if exec_result.returncode != 0:
+        if exec_result.returncode != 0 and exec_result.stderr:
             return {
                 "success": False,
-                "error": f"Runtime Error:\n{exec_result.stderr}",
-                "compilation_time": compilation_time,
-                "execution_time": execution_time,
-                "output": None
+                "error": exec_result.stderr,
+                "stage": "execution",
+                "compile_time": compile_time,
+                "exec_time": exec_time
             }
         
         return {
             "success": True,
             "output": exec_result.stdout,
-            "error": None,
-            "compilation_time": compilation_time,
-            "execution_time": execution_time
+            "compile_time": compile_time,
+            "exec_time": exec_time
         }
     
     except subprocess.TimeoutExpired:
-        return {
-            "success": False,
-            "error": "Time Limit Exceeded",
-            "output": None,
-            "compilation_time": None,
-            "execution_time": None
-        }
+        return {"success": False, "error": "Time limit exceeded"}
     except Exception as e:
-        return {
-            "success": False,
-            "error": f"Server Error: {str(e)}",
-            "output": None,
-            "compilation_time": None,
-            "execution_time": None
-        }
+        return {"success": False, "error": str(e)}
     finally:
         # Cleanup
         for file in [cpp_file, exe_file, input_file]:
@@ -168,107 +156,19 @@ async def run_code(
                     pass
 
 @app.get("/examples")
-async def get_examples():
+async def examples():
     return {
         "hello_world": {
-            "code": """#include <iostream>
-using namespace std;
-
-int main() {
-    cout << "Hello, World!" << endl;
-    return 0;
-}""",
+            "code": "#include <iostream>\nusing namespace std;\n\nint main() {\n    cout << \"Hello World!\" << endl;\n    return 0;\n}",
             "input": ""
         },
-        "sum_two_numbers": {
-            "code": """#include <iostream>
-using namespace std;
-
-int main() {
-    int a, b;
-    cin >> a >> b;
-    cout << "Sum: " << (a + b) << endl;
-    return 0;
-}""",
-            "input": "5 10"
+        "sum": {
+            "code": "#include <iostream>\nusing namespace std;\n\nint main() {\n    int a, b;\n    cin >> a >> b;\n    cout << \"Sum: \" << (a + b) << endl;\n    return 0;\n}",
+            "input": "10 20"
         },
         "fibonacci": {
-            "code": """#include <iostream>
-using namespace std;
-
-int main() {
-    int n;
-    cin >> n;
-    long long a = 0, b = 1;
-    
-    for(int i = 0; i < n; i++) {
-        cout << a << " ";
-        long long temp = a + b;
-        a = b;
-        b = temp;
-    }
-    cout << endl;
-    return 0;
-}""",
+            "code": "#include <iostream>\nusing namespace std;\n\nint main() {\n    int n;\n    cin >> n;\n    int a = 0, b = 1;\n    for(int i = 0; i < n; i++) {\n        cout << a << \" \";\n        int temp = a + b;\n        a = b;\n        b = temp;\n    }\n    cout << endl;\n    return 0;\n}",
             "input": "10"
-        },
-        "prime_check": {
-            "code": """#include <iostream>
-#include <cmath>
-using namespace std;
-
-bool isPrime(int n) {
-    if(n <= 1) return false;
-    if(n <= 3) return true;
-    if(n % 2 == 0 || n % 3 == 0) return false;
-    
-    for(int i = 5; i * i <= n; i += 6) {
-        if(n % i == 0 || n % (i + 2) == 0)
-            return false;
-    }
-    return true;
-}
-
-int main() {
-    int num;
-    cin >> num;
-    
-    if(isPrime(num))
-        cout << num << " is Prime" << endl;
-    else
-        cout << num << " is Not Prime" << endl;
-    
-    return 0;
-}""",
-            "input": "17"
-        },
-        "sorting": {
-            "code": """#include <iostream>
-#include <vector>
-#include <algorithm>
-using namespace std;
-
-int main() {
-    int n;
-    cin >> n;
-    vector<int> arr(n);
-    
-    for(int i = 0; i < n; i++)
-        cin >> arr[i];
-    
-    sort(arr.begin(), arr.end());
-    
-    cout << "Sorted: ";
-    for(int x : arr)
-        cout << x << " ";
-    cout << endl;
-    
-    cout << "Min: " << arr[0] << endl;
-    cout << "Max: " << arr[n-1] << endl;
-    
-    return 0;
-}""",
-            "input": "5\n3 1 4 1 5"
         }
     }
 
